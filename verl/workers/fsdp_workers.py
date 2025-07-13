@@ -518,9 +518,9 @@ class FSDPWorker(Worker):
             ) / (1024**3)
             metrics["perf/cpu_memory_used_gb"] = psutil.virtual_memory().used / (1024**3)
 
-            self.lr_scheduler.step()
             lr = self.lr_scheduler.get_last_lr()[0]
             metrics["actor/lr"] = lr
+            self.lr_scheduler.step()
 
             # Metrics should be in non_tensor_batch instead of meta_info, as DataProto not concat meta_info.
             output = DataProto(

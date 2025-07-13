@@ -28,6 +28,7 @@ from ...protocol import DataProto
 from ...trainer.core_algos import compute_value_loss
 from ...utils import torch_functional as VF
 from ...utils.py_functional import append_to_dict
+from ...utils.seqlen_balancing import prepare_dynamic_batch, restore_dynamic_batch
 from ...utils.ulysses import gather_outputs_and_unpad, ulysses_pad_and_slice_inputs
 from .base import BasePPOCritic
 from .config import CriticConfig
@@ -149,9 +150,13 @@ class DataParallelPPOCritic(BasePPOCritic):
         select_keys = ["responses", "input_ids", "attention_mask", "position_ids"]
         non_tensor_select_keys = ["multi_modal_inputs"]
 
-        micro_batches = data.select(select_keys, non_tensor_select_keys).split(
-            self.config.micro_batch_size_per_device_for_experience
-        )
+        data = data.select(select_keys, non_tensor_select_keys)
+        if self.config.use_dynamic_bsz:
+            max_token_len = self.config.micro_batch_size_per_device_for_experience * data.batch["input_ids"].size(-1)
+            micro_batches, batch_idx_list = prepare_dynamic_batch(data, max_token_len=max_token_len)
+        else:
+            micro_batches = data.split(self.config.micro_batch_size_per_device_for_experience)
+
         values_lst = []
         if self.rank == 0:
             micro_batches = tqdm(micro_batches, desc="Compute values", position=1)
@@ -162,10 +167,14 @@ class DataParallelPPOCritic(BasePPOCritic):
             values_lst.append(values)
 
         values = torch.concat(values_lst, dim=0)
+
+        if self.config.use_dynamic_bsz:
+            values = restore_dynamic_batch(values, batch_idx_list)
+
         responses = data.batch["responses"]
         attention_mask = data.batch["attention_mask"]
         response_length = responses.size(1)
-        values = values * attention_mask[:, -response_length:]
+        values = values * attention_mask[:, -response_length:]  # only action tokens have values
         return values
 
     def update_critic(self, data: DataProto) -> Dict[str, Any]:
@@ -187,7 +196,13 @@ class DataParallelPPOCritic(BasePPOCritic):
                 gradient_accumulation = (
                     self.config.global_batch_size_per_device // self.config.micro_batch_size_per_device_for_update
                 )
-                micro_batches = mini_batch.split(self.config.micro_batch_size_per_device_for_update)
+                if self.config.use_dynamic_bsz:
+                    max_input_len = data.batch["input_ids"].size(-1)
+                    max_token_len = self.config.micro_batch_size_per_device_for_update * max_input_len
+                    micro_batches, _ = prepare_dynamic_batch(mini_batch, max_token_len=max_token_len)
+                else:
+                    micro_batches = mini_batch.split(self.config.micro_batch_size_per_device_for_update)
+
                 if self.rank == 0:
                     micro_batches = tqdm(micro_batches, desc="Update critic", position=2)
 

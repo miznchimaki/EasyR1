@@ -41,6 +41,7 @@ class CriticConfig:
     """use padding-free training"""
     ulysses_size: int = 1
     """ulysses sequence parallel size"""
+    use_dynamic_bsz: bool = True
     model: ModelConfig = field(default_factory=ModelConfig)
     optim: OptimConfig = field(default_factory=OptimConfig)
     fsdp: FSDPConfig = field(default_factory=FSDPConfig)
